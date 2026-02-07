@@ -97,7 +97,7 @@ apply_rules() {
       iptables -A DOCKER-USER -s "$cip" -d "$net" -j REJECT
   done
 
-  echo "[sandbox] Applied rules for $cid ($cip)"
+  echo "[ai-sandbox] Applied rules for $cid ($cip)"
 }
 
 allow_dns() {
@@ -118,7 +118,7 @@ remove_rules() {
   [[ -n "${cip:-}" ]] || cip="$(ip_of "$cid")"
   [[ -n "${cip:-}" ]] || return 0
   remove_rules_by_ip "$cip"
-  echo "[sandbox] Removed rules for $cid ($cip)"
+  echo "[ai-sandbox] Removed rules for $cid ($cip)"
 }
 
 remove_rules_by_ip() {
@@ -141,7 +141,7 @@ remove_dns() {
 }
 
 cleanup_all_rules() {
-  echo "[sandbox] Cleaning up rules..."
+  echo "[ai-sandbox] Cleaning up rules..."
   shopt -s nullglob
   for f in "$STATE_DIR"/*.ip; do
     cip="$(cat "$f" 2>/dev/null || true)"
@@ -156,18 +156,18 @@ sandbox_running() {
 }
 
 # 2) run vscode detached as user (avoid keyring prompt)
-echo "[sandbox] Opening VS Code (detached): $WORKSPACE"
+echo "[ai-sandbox] Opening VS Code (detached): $WORKSPACE"
 sudo -u "$REAL_USER" setsid -f code --new-window --password-store=basic "$WORKSPACE" >/dev/null 2>&1 || true
 
 # Ctrl+D watcher from the real terminal (prevents immediate EOF under sudo)
 if [[ -t 0 ]] && [[ -e /dev/tty ]]; then
-  ( cat </dev/tty >/dev/null; touch "$STOP_FLAG"; echo "[sandbox] Ctrl+D received" ) &
+  ( cat </dev/tty >/dev/null; touch "$STOP_FLAG"; echo "[ai-sandbox] Ctrl+D received" ) &
 else
-  echo "[sandbox] Warning: no TTY; Ctrl+D stop disabled."
+  echo "[ai-sandbox] Warning: no TTY; Ctrl+D stop disabled."
 fi
 
 # 3) docker events watcher
-echo "[sandbox] Watching Docker events (label ai-sandbox=true). Ctrl+D or ${IDLE_TIMEOUT} no container to stop."
+echo "[ai-sandbox] Watching Docker events (label ai-sandbox=true). Ctrl+D or ${IDLE_TIMEOUT} no container to stop."
 docker events \
   --filter "$LABEL_FILTER" \
   --filter event=start \
@@ -181,7 +181,7 @@ docker events \
     esac
   done &
 EVENTS_PID=$!
-echo "[sandbox] ...docker watching PID ${EVENTS_PID}"
+echo "[ai-sandbox] ...docker watching PID ${EVENTS_PID}"
 
 # Apply rules for already-running sandbox containers (if any)
 for cid in $(docker ps --filter "$LABEL_FILTER" -q); do
@@ -194,7 +194,7 @@ NONE_SINCE=0
 
 # 4) stop on Ctrl+D OR if no sandbox container exists for >60s (after we’ve seen one, and after grace)
 while true; do
-  [[ -f "$STOP_FLAG" ]] && echo "[sandbox] Stop flag received." && break
+  [[ -f "$STOP_FLAG" ]] && echo "[ai-sandbox] Stop flag received." && break
 
   now="$(date +%s)"
   if sandbox_running; then
@@ -208,7 +208,7 @@ while true; do
       if [[ "$NONE_SINCE" -eq 0 ]]; then
         NONE_SINCE="$now"
       elif (( now - NONE_SINCE >= IDLE_TIMEOUT )); then
-        echo "[sandbox] No sandbox container for ${IDLE_TIMEOUT}s -> stopping."
+        echo "[ai-sandbox] No sandbox container for ${IDLE_TIMEOUT}s -> stopping."
         break
       fi
     fi
@@ -220,5 +220,5 @@ done
 cleanup_all_rules
 kill "$EVENTS_PID" 2>/dev/null || true
 rm -f "$STOP_FLAG" 2>/dev/null || true
-echo "[sandbox] Done."
+echo "[ai-sandbox] Done."
 
