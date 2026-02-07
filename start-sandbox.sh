@@ -2,9 +2,9 @@
 set -euo pipefail
 
 LABEL_FILTER='label=ai-sandbox=true'
-NETS=( "192.168.0.0/16" "127.0.0.0/8" )
+NETS=( "10.0.0.0/8" "172.16.0.0/12" "192.168.0.0/16" )
 DNS_RESOLVER_IP="192.168.0.1" # can be LAN or public (e.g. 1.1.1.1)
-DNS_PORTS=(53)
+DNS_PORT=53
 
 STATE_DIR="/run/sandbox-net-watch"
 STOP_FLAG="/run/sandbox-stop.flag"
@@ -66,7 +66,6 @@ cat > "$DEVCONTAINER_JSON" <<EOF
         "openai.chatgpt"
       ],
       "settings": {
-        "password-store": "basic",
         "remote.extensionKind": {
           "anthropic.claude-code": [ "workspace" ],
           "openai.chatgpt": [ "workspace" ]
@@ -95,7 +94,7 @@ apply_rules() {
   # 2) block LAN + localhost
   for net in "${NETS[@]}"; do
     iptables -C DOCKER-USER -s "$cip" -d "$net" -j REJECT 2>/dev/null || \
-      iptables -I DOCKER-USER -s "$cip" -d "$net" -j REJECT
+      iptables -A DOCKER-USER -s "$cip" -d "$net" -j REJECT
   done
 
   echo "[sandbox] Applied rules for $cid ($cip)"
@@ -105,9 +104,21 @@ allow_dns() {
   local cip="$1"
 
   for proto in udp tcp; do
-    iptables -C DOCKER-USER -s "$cip" -d "$DNS_RESOLVER_IP" -p "$proto" --dport 53 -j ACCEPT 2>/dev/null || \
-      iptables -I DOCKER-USER 1 -s "$cip" -d "$DNS_RESOLVER_IP" -p "$proto" --dport 53 -j ACCEPT
+    iptables -C DOCKER-USER -s "$cip" -d "$DNS_RESOLVER_IP" -p "$proto" --dport "$DNS_PORT" -j ACCEPT 2>/dev/null || \
+      iptables -I DOCKER-USER 1 -s "$cip" -d "$DNS_RESOLVER_IP" -p "$proto" --dport "$DNS_PORT" -j ACCEPT
   done
+}
+
+remove_rules() {
+  local cid="$1" cip=""
+  if [[ -f "$(state_path "$cid")" ]]; then
+    cip="$(cat "$(state_path "$cid")" 2>/dev/null || true)"
+    rm -f "$(state_path "$cid")" 2>/dev/null || true
+  fi
+  [[ -n "${cip:-}" ]] || cip="$(ip_of "$cid")"
+  [[ -n "${cip:-}" ]] || return 0
+  remove_rules_by_ip "$cip"
+  echo "[sandbox] Removed rules for $cid ($cip)"
 }
 
 remove_rules_by_ip() {
@@ -125,20 +136,8 @@ remove_dns() {
   local cip="$1"
 
   for proto in udp tcp; do
-    iptables -D DOCKER-USER -s "$cip" -d "$DNS_RESOLVER_IP" -p "$proto" --dport 53 -j ACCEPT 2>/dev/null || true
+    iptables -D DOCKER-USER -s "$cip" -d "$DNS_RESOLVER_IP" -p "$proto" --dport "$DNS_PORT" -j ACCEPT 2>/dev/null || true
   done
-}
-
-remove_rules() {
-  local cid="$1" cip=""
-  if [[ -f "$(state_path "$cid")" ]]; then
-    cip="$(cat "$(state_path "$cid")" 2>/dev/null || true)"
-    rm -f "$(state_path "$cid")" 2>/dev/null || true
-  fi
-  [[ -n "${cip:-}" ]] || cip="$(ip_of "$cid")"
-  [[ -n "${cip:-}" ]] || return 0
-  remove_rules_by_ip "$cip"
-  echo "[sandbox] Removed rules for $cid ($cip)"
 }
 
 cleanup_all_rules() {
@@ -158,11 +157,11 @@ sandbox_running() {
 
 # 2) run vscode detached as user (avoid keyring prompt)
 echo "[sandbox] Opening VS Code (detached): $WORKSPACE"
-sudo -u "$REAL_USER" setsid -f code --password-store=basic --new-window "$WORKSPACE" >/dev/null 2>&1 || true
+sudo -u "$REAL_USER" setsid -f code --new-window --password-store=basic "$WORKSPACE" >/dev/null 2>&1 || true
 
 # Ctrl+D watcher from the real terminal (prevents immediate EOF under sudo)
 if [[ -t 0 ]] && [[ -e /dev/tty ]]; then
-  ( cat </dev/tty >/dev/null; touch "$STOP_FLAG" ) &
+  ( cat </dev/tty >/dev/null; touch "$STOP_FLAG"; echo "[sandbox] Ctrl+D received" ) &
 else
   echo "[sandbox] Warning: no TTY; Ctrl+D stop disabled."
 fi
@@ -182,6 +181,7 @@ docker events \
     esac
   done &
 EVENTS_PID=$!
+echo "[sandbox] ...docker watching PID ${EVENTS_PID}"
 
 # Apply rules for already-running sandbox containers (if any)
 for cid in $(docker ps --filter "$LABEL_FILTER" -q); do
@@ -194,7 +194,7 @@ NONE_SINCE=0
 
 # 4) stop on Ctrl+D OR if no sandbox container exists for >60s (after we’ve seen one, and after grace)
 while true; do
-  [[ -f "$STOP_FLAG" ]] && echo "[sandbox] Ctrl+D received." && break
+  [[ -f "$STOP_FLAG" ]] && echo "[sandbox] Stop flag received." && break
 
   now="$(date +%s)"
   if sandbox_running; then
