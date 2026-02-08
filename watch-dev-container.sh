@@ -90,7 +90,6 @@ remove_rules() {
   [[ -n "${cip:-}" ]] || return 0
 
   remove_rules_by_ip "$cip"
-  echo "[ai-sandbox] Removed rules for $cid ($cip)"
 }
 
 remove_rules_by_ip() {
@@ -101,6 +100,8 @@ remove_rules_by_ip() {
   for net in "${NETS[@]}"; do
     iptables -D DOCKER-USER -s "$cip" -d "$net" -j REJECT 2>/dev/null || true
   done
+
+  echo "[ai-sandbox] Removed rules for $cid ($cip)"
 }
 
 remove_dns() {
@@ -162,7 +163,7 @@ FIFO_READER_PID=$!
 echo "[ai-sandbox] Docker events watching by $DOCKER_EVENTS_PID $FIFO_READER_PID $DOCKER_EVENTS_FIFO"
 
 # ---- ----
-echo "[ai-sandbox] Watching Docker events (label ai-sandbox=true). Ctrl+D to stop watch or wait for exit."
+echo "[ai-sandbox] Watching Docker events (label ai-sandbox=true)."
 
 # wating for container or stop of no container present anymore
 START_TS="$(date +%s)"
