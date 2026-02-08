@@ -226,4 +226,4 @@ Run from an **interactive terminal**. Ctrl+D handling depends on `/dev/tty`.
 
 ## License
 
-MIT License
+This project is under an [MIT license](LICENSE.txt).
