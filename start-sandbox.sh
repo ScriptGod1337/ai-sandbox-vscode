@@ -92,31 +92,30 @@ code --new-window "$WORKSPACE" >/dev/null 2>&1 || true
 # 3) wait for VSCode close
 
 # 3.1) Ctrl+D handler: set flag + wait for watcher exit
-TTY_WATCH_PID=""
+
+# Start TTY EOF watcher (Ctrl+D) reading from the real terminal, not stdin
+cat </dev/tty >/dev/null &
+TTY_PID=$!
+
 cleanup() {
-  [[ -n "${TTY_WATCH_PID:-}" ]] && kill "$TTY_WATCH_PID" 2>/dev/null || true
+  kill "$TTY_PID" 2>/dev/null || true
 }
 trap cleanup EXIT
 
-if [[ -r /dev/tty ]]; then
-  (
-    # blocks until EOF on the controlling terminal (Ctrl+D on empty line)
-    cat </dev/tty >/dev/null
+# Wait until either the watcher ends (timeout/idle) OR Ctrl+D happens
+wait -n "$WATCHER_PID" "$TTY_PID"
 
-    echo "[ai-sandbox] Ctrl+D received -> stopping watcher..."
-    : > "$STOP_FLAG"
-
-    # Wait for root watcher to exit, then end launcher
-    wait "$WATCHER_PID" 2>/dev/null || true
-    echo "[ai-sandbox] Watcher exited."
-    exit 0
-  ) &
-  TTY_WATCH_PID=$!
+if ! kill -0 "$TTY_PID" 2>/dev/null; then
+  # Ctrl+D happened first
+  echo "[ai-sandbox] Ctrl+D received -> stopping watcher..."
+  : > "$STOP_FLAG"
+  wait "$WATCHER_PID" 2>/dev/null || true
+  echo "[ai-sandbox] Watcher exited."
 else
-  echo "[ai-sandbox] No /dev/tty available; Ctrl+D stop disabled."
+  # Watcher ended first (timeout/idle)
+  echo "[ai-sandbox] Watcher finished."
+  kill "$TTY_PID" 2>/dev/null || true
 fi
 
-# 3.2) Normal path: wait for watcher to exit on its own (idle/grace)
-wait "$WATCHER_PID" || true
 echo "[ai-sandbox] Done."
 
