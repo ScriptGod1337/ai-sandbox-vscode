@@ -1,41 +1,32 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-LABEL_FILTER='label=ai-sandbox=true'
+# ---- Configurable network policy (passed to sudo watcher) ----
 NETS=( "10.0.0.0/8" "172.16.0.0/12" "192.168.0.0/16" )
-DNS_RESOLVER_IP="192.168.0.1" # can be LAN or public (e.g. 1.1.1.1)
+
+# NOTE: If you want to allow LAN DNS, set this to your router IP.
+# If you want to avoid LAN entirely, set to public DNS like 1.1.1.1 or 9.9.9.9.
+DNS_RESOLVER_IP="192.168.0.1"
 DNS_PORT=53
+# -------------------------------------------------------------
 
-STATE_DIR="/run/sandbox-net-watch"
-STOP_FLAG="/run/sandbox-stop.flag"
-CHECK_INTERVAL=5
-IDLE_TIMEOUT=30
-STARTUP_GRACE=60 # seconds to wait before idle logic can stop us
+usage() {
+  echo "Usage: $0 <workspace-folder>"
+  exit 1
+}
 
-usage() { echo "Usage: sudo $0 <workspace-folder>"; exit 1; }
 [[ $# -eq 1 ]] || usage
-
 WORKSPACE="$(realpath "$1")"
 [[ -d "$WORKSPACE" ]] || { echo "Error: workspace folder does not exist: $WORKSPACE"; exit 1; }
 
-# 1) ensure root rights
-if [[ "${EUID}" -ne 0 ]]; then
-  echo "Run as root: sudo $0 \"$WORKSPACE\""
-  exit 1
-fi
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-REAL_USER="${SUDO_USER:-}"
-[[ -n "$REAL_USER" ]] || { echo "Error: SUDO_USER empty (run via sudo from a normal user)."; exit 1; }
-
-mkdir -p "$STATE_DIR"
-chmod 700 "$STATE_DIR"
-rm -f "$STOP_FLAG" 2>/dev/null || true
-
-# Write devcontainer.json into workspace (VS Code stops container on close)
+# Devcontainer settings must be created/owned by the current user
 DEVCONTAINER_DIR="$WORKSPACE/.devcontainer"
 DEVCONTAINER_JSON="$DEVCONTAINER_DIR/devcontainer.json"
 mkdir -p "$DEVCONTAINER_DIR"
 
+# If you want literally identical content, paste your existing devcontainer.json heredoc here.
 cat > "$DEVCONTAINER_JSON" <<EOF
 {
   "name": "dev-sandbox",
@@ -75,150 +66,43 @@ cat > "$DEVCONTAINER_JSON" <<EOF
   }
 }
 EOF
+# Stop-flag in workspace so the non-root user can signal stop without needing sudo
+STOP_FLAG="/tmp/ai-sandbox-stop.$$.$RANDOM"
+rm -f "$STOP_FLAG" 2>/dev/null || true
 
-ip_of() {
-  docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$1" 2>/dev/null || true
-}
-state_path() { echo "$STATE_DIR/$1.ip"; }
+# 1) Start the root watcher (iptables + docker wait logic)
+WATCH_ARGS=(
+  --stop-flag "$STOP_FLAG"
+  --dns-ip "$DNS_RESOLVER_IP"
+  --dns-port "$DNS_PORT"
+)
+for net in "${NETS[@]}"; do
+  WATCH_ARGS+=( --net "$net" )
+done
 
-apply_rules() {
-  local cid="$1" cip
-  cip="$(ip_of "$cid")"
-  [[ -n "${cip:-}" ]] || return 0
+echo "[ai-sandbox] Starting dev container watch detached..."
+sudo -v
+sudo "$SCRIPT_DIR/watch-dev-container.sh" "${WATCH_ARGS[@]}" &
+WATCHER_PID=$!
 
-  echo "$cip" > "$(state_path "$cid")"
+# 2) Open VS Code detached as the current user
+echo "[ai-sandbox] Opening VS Code: $WORKSPACE"
+code --new-window "$WORKSPACE" >/dev/null 2>&1 || true
 
-  # 1) allow DNS explicitly
-  allow_dns "$cip"
-
-  # 2) block LAN + localhost
-  for net in "${NETS[@]}"; do
-    iptables -C DOCKER-USER -s "$cip" -d "$net" -j REJECT 2>/dev/null || \
-      iptables -A DOCKER-USER -s "$cip" -d "$net" -j REJECT
-  done
-
-  echo "[ai-sandbox] Applied rules for $cid ($cip)"
-}
-
-allow_dns() {
-  local cip="$1"
-
-  for proto in udp tcp; do
-    iptables -C DOCKER-USER -s "$cip" -d "$DNS_RESOLVER_IP" -p "$proto" --dport "$DNS_PORT" -j ACCEPT 2>/dev/null || \
-      iptables -I DOCKER-USER 1 -s "$cip" -d "$DNS_RESOLVER_IP" -p "$proto" --dport "$DNS_PORT" -j ACCEPT
-  done
-}
-
-remove_rules() {
-  local cid="$1" cip=""
-  if [[ -f "$(state_path "$cid")" ]]; then
-    cip="$(cat "$(state_path "$cid")" 2>/dev/null || true)"
-    rm -f "$(state_path "$cid")" 2>/dev/null || true
-  fi
-  [[ -n "${cip:-}" ]] || cip="$(ip_of "$cid")"
-  [[ -n "${cip:-}" ]] || return 0
-  remove_rules_by_ip "$cip"
-  echo "[ai-sandbox] Removed rules for $cid ($cip)"
-}
-
-remove_rules_by_ip() {
-  local cip="$1"
-  [[ -n "${cip:-}" ]] || return 0
-
-  remove_dns "$cip"
-
-  for net in "${NETS[@]}"; do
-    iptables -D DOCKER-USER -s "$cip" -d "$net" -j REJECT 2>/dev/null || true
-  done
-}
-
-remove_dns() {
-  local cip="$1"
-
-  for proto in udp tcp; do
-    iptables -D DOCKER-USER -s "$cip" -d "$DNS_RESOLVER_IP" -p "$proto" --dport "$DNS_PORT" -j ACCEPT 2>/dev/null || true
-  done
-}
-
-cleanup_all_rules() {
-  echo "[ai-sandbox] Cleaning up rules..."
-  shopt -s nullglob
-  for f in "$STATE_DIR"/*.ip; do
-    cip="$(cat "$f" 2>/dev/null || true)"
-    remove_rules_by_ip "$cip"
-    rm -f "$f" 2>/dev/null || true
-  done
-  shopt -u nullglob
-}
-
-sandbox_running() {
-  docker ps --filter "$LABEL_FILTER" -q | grep -q .
-}
-
-# 2) run vscode detached as user (avoid keyring prompt)
-echo "[ai-sandbox] Opening VS Code (detached): $WORKSPACE"
-sudo -u "$REAL_USER" setsid -f code --new-window --password-store=basic "$WORKSPACE" >/dev/null 2>&1 || true
-
-# Ctrl+D watcher from the real terminal (prevents immediate EOF under sudo)
-if [[ -t 0 ]] && [[ -e /dev/tty ]]; then
-  ( cat </dev/tty >/dev/null; touch "$STOP_FLAG"; echo "[ai-sandbox] Ctrl+D received" ) &
+# 3) Ctrl+D watcher from the real terminal (touch stop flag)
+# Ctrl+D -> touch stop flag (read from the controlling TTY, not stdin)
+if [[ -r /dev/tty ]]; then
+  (
+    cat </dev/tty >/dev/null
+    : > "$STOP_FLAG"
+    echo "[ai-sandbox] Ctrl+D received"
+  ) &
 else
-  echo "[ai-sandbox] Warning: no TTY; Ctrl+D stop disabled."
+  echo "[ai-sandbox] No /dev/tty available; Ctrl+D stop disabled."
 fi
 
-# 3) docker events watcher
-echo "[ai-sandbox] Watching Docker events (label ai-sandbox=true). Ctrl+D or ${IDLE_TIMEOUT} no container to stop."
-docker events \
-  --filter "$LABEL_FILTER" \
-  --filter event=start \
-  --filter event=stop \
-  --filter event=die \
-  --filter event=destroy \
-  --format '{{.Status}} {{.ID}}' | while read -r status cid; do
-    case "$status" in
-      start) apply_rules "$cid" ;;
-      stop|die|destroy) remove_rules "$cid" ;;
-    esac
-  done &
-EVENTS_PID=$!
-echo "[ai-sandbox] ...docker watching PID ${EVENTS_PID}"
 
-# Apply rules for already-running sandbox containers (if any)
-for cid in $(docker ps --filter "$LABEL_FILTER" -q); do
-  apply_rules "$cid"
-done
-
-START_TS="$(date +%s)"
-SEEN_ONCE=0
-NONE_SINCE=0
-
-# 4) stop on Ctrl+D OR if no sandbox container exists for >60s (after we’ve seen one, and after grace)
-while true; do
-  [[ -f "$STOP_FLAG" ]] && echo "[ai-sandbox] Stop flag received." && break
-
-  now="$(date +%s)"
-  if sandbox_running; then
-    SEEN_ONCE=1
-    NONE_SINCE=0
-  else
-    # don’t auto-exit too early while the container is still being built/started
-    if (( now - START_TS < STARTUP_GRACE )); then
-      :
-    elif (( SEEN_ONCE == 1 )); then
-      if [[ "$NONE_SINCE" -eq 0 ]]; then
-        NONE_SINCE="$now"
-      elif (( now - NONE_SINCE >= IDLE_TIMEOUT )); then
-        echo "[ai-sandbox] No sandbox container for ${IDLE_TIMEOUT}s -> stopping."
-        break
-      fi
-    fi
-  fi
-
-  sleep "$CHECK_INTERVAL"
-done
-
-cleanup_all_rules
-kill "$EVENTS_PID" 2>/dev/null || true
-rm -f "$STOP_FLAG" 2>/dev/null || true
+# 4) Wait for the root watcher to exit
+wait "$WATCHER_PID" || true
 echo "[ai-sandbox] Done."
 

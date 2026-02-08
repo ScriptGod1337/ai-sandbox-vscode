@@ -62,15 +62,15 @@ AI agents operate inside a constrained workspace with no visibility into your lo
 
 ```
 chmod +x start-sandbox.sh
+chmod +x watch-dev-container.sh
 sudo ./start-sandbox.sh /path/to/workspace
 ```
 
 What happens:
 
-1. The script ensures it runs as root.
-2. `.devcontainer/devcontainer.json` is created or updated in the workspace.
-3. VS Code opens **detached** as your normal user.
-4. Docker events are monitored and firewall rules are applied automatically.
+1. `.devcontainer/devcontainer.json` is created or updated in the workspace.
+2. VS Code opens **detached** as your normal user.
+3. Docker events are monitored and firewall rules are applied automatically.
 
 ---
 
