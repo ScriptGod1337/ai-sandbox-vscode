@@ -101,7 +101,7 @@ remove_rules_by_ip() {
     iptables -D DOCKER-USER -s "$cip" -d "$net" -j REJECT 2>/dev/null || true
   done
 
-  echo "[ai-sandbox] Removed rules for $cid ($cip)"
+  echo "[ai-sandbox] Removed rules for ($cip)"
 }
 
 remove_dns() {

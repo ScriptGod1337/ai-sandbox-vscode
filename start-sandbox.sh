@@ -125,7 +125,7 @@ fi
 # ---- 3) Open VS Code detached as the current user ----
 if [ -n "$CID" ]; then
   echo "[ai-sandbox] Opening VS Code: attaching to dev container $CID"
-  code --new-window  --folder-uri "vscode-remote://attached-container+$(printf "$CID" | xxd -p)/workspaces/$(basename "$WORKSPACE")"
+  code --new-window  --folder-uri "vscode-remote://attached-container+$(printf "$CID" | xxd -p)/workspaces/$(basename "$WORKSPACE")" >/dev/null 2>&1 || true
 else
   echo "[ai-sandbox] Opening VS Code: $WORKSPACE"
   code --new-window "$WORKSPACE" >/dev/null 2>&1 || true
@@ -164,8 +164,8 @@ fi
 
 # close dev container (if stil running)
 if [ -n "$CID" ]; then
-  echo "[ai-sandbox] Stopping dev container."
-  docker stop "$CID" || echo "[ai-sandbox] devcontainer up failed; continuing"
+  echo "[ai-sandbox] Stopping dev container $CID."
+  docker stop "$CID" >/dev/null 2>&1 || echo "[ai-sandbox] dev container up failed; continuing"
 fi
 
 echo "[ai-sandbox] Done."
