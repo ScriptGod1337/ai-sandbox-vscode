@@ -27,7 +27,8 @@ DEVCONTAINER_JSON="$DEVCONTAINER_DIR/devcontainer.json"
 mkdir -p "$DEVCONTAINER_DIR"
 
 # If you want literally identical content, paste your existing devcontainer.json heredoc here.
-cat > "$DEVCONTAINER_JSON" <<EOF
+if [[ ! -f "$DEVCONTAINER_JSON" ]]; then
+  cat > "$DEVCONTAINER_JSON" <<EOF
 {
   "name": "dev-sandbox",
   "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
@@ -66,6 +67,10 @@ cat > "$DEVCONTAINER_JSON" <<EOF
   }
 }
 EOF
+else
+  echo "[ai-sandbox] Using existing .devcontainer/devcontainer.json"
+fi
+
 # Stop-flag in workspace so the non-root user can signal stop without needing sudo
 STOP_FLAG="/tmp/ai-sandbox-stop.$$.$RANDOM"
 rm -f "$STOP_FLAG" 2>/dev/null || true
