@@ -89,20 +89,34 @@ WATCHER_PID=$!
 echo "[ai-sandbox] Opening VS Code: $WORKSPACE"
 code --new-window "$WORKSPACE" >/dev/null 2>&1 || true
 
-# 3) Ctrl+D watcher from the real terminal (touch stop flag)
-# Ctrl+D -> touch stop flag (read from the controlling TTY, not stdin)
+# 3) wait for VSCode close
+
+# 3.1) Ctrl+D handler: set flag + wait for watcher exit
+TTY_WATCH_PID=""
+cleanup() {
+  [[ -n "${TTY_WATCH_PID:-}" ]] && kill "$TTY_WATCH_PID" 2>/dev/null || true
+}
+trap cleanup EXIT
+
 if [[ -r /dev/tty ]]; then
   (
+    # blocks until EOF on the controlling terminal (Ctrl+D on empty line)
     cat </dev/tty >/dev/null
+
+    echo "[ai-sandbox] Ctrl+D received -> stopping watcher..."
     : > "$STOP_FLAG"
-    echo "[ai-sandbox] Ctrl+D received"
+
+    # Wait for root watcher to exit, then end launcher
+    wait "$WATCHER_PID" 2>/dev/null || true
+    echo "[ai-sandbox] Watcher exited."
+    exit 0
   ) &
+  TTY_WATCH_PID=$!
 else
   echo "[ai-sandbox] No /dev/tty available; Ctrl+D stop disabled."
 fi
 
-
-# 4) Wait for the root watcher to exit
+# 3.2) Normal path: wait for watcher to exit on its own (idle/grace)
 wait "$WATCHER_PID" || true
 echo "[ai-sandbox] Done."
 
