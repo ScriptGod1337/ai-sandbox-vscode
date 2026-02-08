@@ -63,7 +63,7 @@ AI agents operate inside a constrained workspace with no visibility into your lo
 ```
 chmod +x start-sandbox.sh
 chmod +x watch-dev-container.sh
-sudo ./start-sandbox.sh /path/to/workspace
+./start-sandbox.sh /path/to/workspace
 ```
 
 What happens:
@@ -71,6 +71,16 @@ What happens:
 1. `.devcontainer/devcontainer.json` is created or updated in the workspace.
 2. VS Code opens **detached** as your normal user.
 3. Docker events are monitored and firewall rules are applied automatically.
+
+### Optional
+Use [devcontainer CLI](https://code.visualstudio.com/docs/devcontainers/devcontainer-cli)
+
+```
+chmod +x init.sh
+sudo ./init.sh
+```
+Installs *local* devcontainer-cli.
+This allows to create dev container automatically - whithout VS Code
 
 ---
 

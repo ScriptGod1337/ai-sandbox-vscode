@@ -21,7 +21,10 @@ WORKSPACE="$(realpath "$1")"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-# Devcontainer settings must be created/owned by the current user
+# ---- 1) Create dev container settings ----
+echo "[ai-sandbox] Creating devcontainer.json..."
+
+# devcontainer settings must be created/owned by the current user
 DEVCONTAINER_DIR="$WORKSPACE/.devcontainer"
 DEVCONTAINER_JSON="$DEVCONTAINER_DIR/devcontainer.json"
 mkdir -p "$DEVCONTAINER_DIR"
@@ -71,11 +74,12 @@ else
   echo "[ai-sandbox] Using existing .devcontainer/devcontainer.json"
 fi
 
+# ---- 2) Start watching dev container ----
 # Stop-flag in workspace so the non-root user can signal stop without needing sudo
 STOP_FLAG="/tmp/ai-sandbox-stop.$$.$RANDOM"
 rm -f "$STOP_FLAG" 2>/dev/null || true
 
-# 1) Start the root watcher (iptables + docker wait logic)
+#  Start the root watcher (iptables + docker wait logic)
 WATCH_ARGS=(
   --stop-flag "$STOP_FLAG"
   --dns-ip "$DNS_RESOLVER_IP"
@@ -89,15 +93,45 @@ echo "[ai-sandbox] Starting dev container watch detached..."
 sudo -v
 sudo "$SCRIPT_DIR/watch-dev-container.sh" "${WATCH_ARGS[@]}" &
 WATCHER_PID=$!
+# ----  ----
 
-# 2) Open VS Code detached as the current user
-echo "[ai-sandbox] Opening VS Code: $WORKSPACE"
-code --new-window "$WORKSPACE" >/dev/null 2>&1 || true
+# ---- 2) Create dev container (optional) ----
+DEVCONTAINER_CLI=""
+CID=""
 
-# 3) wait for VSCode close
+if [ -x "./node_modules/.bin/devcontainer" ]; then
+  DEVCONTAINER_CLI="./node_modules/.bin/devcontainer"
+elif command -v devcontainer >/dev/null 2>&1; then
+  DEVCONTAINER_CLI="devcontainer"
+fi
 
-# 3.1) Ctrl+D handler: set flag + wait for watcher exit
+if [ -n "$DEVCONTAINER_CLI" ]; then
+  echo "[ai-sandbox] Using devcontainer CLI: $DEVCONTAINER_CLI"
+  "$DEVCONTAINER_CLI" up --workspace-folder $WORKSPACE || echo "[ai-sandbox] devcontainer up failed; continuing"
 
+  CID=$(docker ps \
+  --filter "label=devcontainer.local_folder=$WORKSPACE" \
+  --format "{{.ID}}" | head -n1)
+  echo "[ai-sandbox] Found devcontainer $CID"
+else
+  echo "[ai-sandbox] devcontainer CLI not found; continuing"
+fi
+# --- ----
+
+# ---- 3) Open VS Code detached as the current user ----
+if [ -n "$CID" ]; then
+  echo "[ai-sandbox] Opening VS Code: attaching to dev container $CID"
+  code --new-window  --folder-uri "vscode-remote://attached-container+$(printf "$CID" | xxd -p)/workspaces/$(basename "$WORKSPACE")"
+else
+  echo "[ai-sandbox] Opening VS Code: $WORKSPACE"
+  code --new-window "$WORKSPACE" >/dev/null 2>&1 || true
+fi
+# ----  ----
+
+# --- 4) wait for VSCode close ---
+echo "[ai-sandbox] Ctrl+D to stop watch or wait for exit."
+
+# Ctrl+D handler: set flag + wait for watcher exit
 # Start TTY EOF watcher (Ctrl+D) reading from the real terminal, not stdin
 cat </dev/tty >/dev/null &
 TTY_PID=$!
@@ -109,7 +143,9 @@ trap cleanup EXIT
 
 # Wait until either the watcher ends (timeout/idle) OR Ctrl+D happens
 wait -n "$WATCHER_PID" "$TTY_PID"
+# ----  ----
 
+# --- 5) clean up ---
 if ! kill -0 "$TTY_PID" 2>/dev/null; then
   # Ctrl+D happened first
   echo "[ai-sandbox] Ctrl+D received -> stopping watcher..."
@@ -120,6 +156,12 @@ else
   # Watcher ended first (timeout/idle)
   echo "[ai-sandbox] Watcher finished."
   kill "$TTY_PID" 2>/dev/null || true
+fi
+
+# close dev container (if stil running)
+if [ -n "$CID" ]; then
+  echo "[ai-sandbox] Stopping dev container."
+  docker stop "$CID" || echo "[ai-sandbox] devcontainer up failed; continuing"
 fi
 
 echo "[ai-sandbox] Done."
