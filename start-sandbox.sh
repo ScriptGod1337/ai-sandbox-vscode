@@ -48,7 +48,11 @@ if [[ ! -f "$DEVCONTAINER_JSON" ]]; then
   "features": {
     "ghcr.io/devcontainers/features/common-utils:2": {},
     "ghcr.io/devcontainers/features/git:1": {},
-    "ghcr.io/devcontainers/features/java:1": {},
+    "ghcr.io/devcontainers/features/java:1": {
+      "version": "25",
+      "installMaven": "true",
+      "installGradle": "false"
+    },
     "ghcr.io/devcontainers/features/python:1": {},
     "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": { "minikube": "none" },
     "ghcr.io/devcontainers/features/terraform:1": {},
