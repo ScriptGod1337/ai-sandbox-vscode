@@ -22,7 +22,6 @@ EOF
   exit 1
 }
 
-
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --stop-flag) STOP_FLAG="$2"; shift 2 ;;
@@ -128,28 +127,42 @@ container_running() {
 }
 
 # ---- ----
+
 echo "[ai-sandbox] Applying rules for existing (label ai-sandbox=true)."
 for cid in $(docker ps --filter "$LABEL_FILTER" -q); do
   apply_rules "$cid"
 done
 
-echo "[ai-sandbox] Watching Docker events (label ai-sandbox=true). Ctrl+D to stop watch or wait for exit."
+# ---- ----
+
+FIFO="/tmp/ai-sandbox-events.$$.$RANDOM"
+rm -f "$FIFO" 2>/dev/null || true
+mkfifo "$FIFO"
+chmod 600 "$FIFO"
+
+# Producer: docker events -> FIFO
 docker events \
   --filter "$LABEL_FILTER" \
   --filter event=start \
   --filter event=stop \
   --filter event=die \
   --filter event=destroy \
-  --format '{{.Status}} {{.ID}}' | while read -r status cid; do
-    case "$status" in
-      start) apply_rules "$cid" ;;
-      stop|die|destroy) remove_rules "$cid" ;;
-    esac
-  done &
+  --format '{{.Status}} {{.ID}}' >"$FIFO" &
+DOCKER_EVENTS_PID=$!
 
-EVENTS_PID=$!
+# Consumer: read FIFO in THIS shell (no pipeline subshell), so trap works reliably
+while read -r status cid; do
+  case "$status" in
+    start) apply_rules "$cid" ;;
+    stop|die|destroy) remove_rules "$cid" ;;
+  esac
+done <"$FIFO" &
+FIFO_READER_PID=$!
+
+echo "[ai-sandbox] docker events PIDs $DOCKER_EVENTS_PID $FIFO_READER_PID"
 
 # ---- ----
+echo "[ai-sandbox] Watching Docker events (label ai-sandbox=true). Ctrl+D to stop watch or wait for exit."
 
 # wating for container or stop of no container present anymore
 START_TS="$(date +%s)"
@@ -210,6 +223,12 @@ done
 
 # step - clean up
 cleanup_all_rules
-kill "$EVENTS_PID" 2>/dev/null || true
+
+echo "[ai-sandbox] Stopping events PIDs $DOCKER_EVENTS_PID $FIFO_READER_PID..."
+kill "$FIFO_READER_PID" 2>/dev/null || true
+kill "$DOCKER_EVENTS_PID" 2>/dev/null || true
+
+echo "[ai-sandbox] Removing stop flag file $STOP_FLAG..."
 rm -f "$STOP_FLAG" 2>/dev/null || true
+
 echo "[ai-sandbox] Watcher done."
