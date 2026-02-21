@@ -35,7 +35,8 @@ if [[ ! -f "$DEVCONTAINER_JSON" ]]; then
 {
   "name": "dev-sandbox",
   "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
-  "workspaceFolder": "/workspaces/\${localWorkspaceFolderBasename}",
+  "workspaceMount": "source=\${localWorkspaceFolder},target=/home/vscode/\${localWorkspaceFolderBasename},type=bind,consistency=cached",
+  "workspaceFolder": "/home/vscode/\${localWorkspaceFolderBasename}",
   "remoteUser": "vscode",
   "shutdownAction": "stopContainer",
   "runArgs": [
@@ -48,21 +49,18 @@ if [[ ! -f "$DEVCONTAINER_JSON" ]]; then
   "features": {
     "ghcr.io/devcontainers/features/common-utils:2": {},
     "ghcr.io/devcontainers/features/git:1": {},
-    "ghcr.io/devcontainers/features/java:1": {
-      "version": "25",
-      "installMaven": "true",
-      "installGradle": "false"
-    },
     "ghcr.io/devcontainers/features/python:1": {},
-    "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": { "minikube": "none" },
-    "ghcr.io/devcontainers/features/terraform:1": {},
     "ghcr.io/devcontainers/features/aws-cli:1": {}
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+    "ghcr.io/devcontainers/features/node:1": {}
   },
+  "postCreateCommand": "npm install -g @anthropic-ai/claude-code",
   "customizations": {
     "vscode": {
       "extensions": [
         "anthropic.claude-code",
-        "openai.chatgpt"
+        "openai.chatgpt",
+        "streetsidesoftware.code-spell-checker"
       ],
       "settings": {
         "remote.extensionKind": {
@@ -125,7 +123,7 @@ fi
 # ---- 3) Open VS Code detached as the current user ----
 if [ -n "$CID" ]; then
   echo "[ai-sandbox] Opening VS Code: attaching to dev container $CID"
-  code --new-window  --folder-uri "vscode-remote://attached-container+$(printf "$CID" | xxd -p)/workspaces/$(basename "$WORKSPACE")" >/dev/null 2>&1 || true
+  code --new-window  --folder-uri "vscode-remote://attached-container+$(printf "$CID" | xxd -p)/home/vscode//$(basename "$WORKSPACE")" >/dev/null 2>&1 || true
 else
   echo "[ai-sandbox] Opening VS Code: $WORKSPACE"
   code --new-window "$WORKSPACE" >/dev/null 2>&1 || true
