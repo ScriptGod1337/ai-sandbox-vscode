@@ -47,8 +47,8 @@ systemctl status devcontainer-firewall.service --no-pager || true
 
 echo ""
 echo "[dev-sandbox] Next steps:"
-echo "  1. Create a config per container in /etc/devcontainer-firewall/containers/<name>.conf"
-echo "  2. Label your devcontainer with:"
-echo '       "dev-sandbox": "true"'
-echo '       "dev-sandbox-config": "<name>"   # optional, falls back to container name'
-echo "  3. Check logs: journalctl -fu devcontainer-firewall"
+echo "[dev-sandbox]   1. Create a config per container in /etc/devcontainer-firewall/containers/<name>.conf"
+echo "[dev-sandbox]   2. Label your devcontainer with:"
+echo '[dev-sandbox]        "dev-sandbox": "true"'
+echo '[dev-sandbox]        "dev-sandbox-config": "<name>"   # optional, falls back to container name'
+echo "[dev-sandbox]   3. Check logs: journalctl -fu devcontainer-firewall"
