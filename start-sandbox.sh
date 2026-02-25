@@ -106,7 +106,7 @@ elif command -v devcontainer >/dev/null 2>&1; then
   DEVCONTAINER_CLI="devcontainer"
 fi
 
-if [ -n "$DEVCONTAINER_CLI" ]; then─
+if [ -n "$DEVCONTAINER_CLI" ]; then
   echo "[dev-sandbox] Using devcontainer CLI: $DEVCONTAINER_CLI"
   "$DEVCONTAINER_CLI" up --workspace-folder $WORKSPACE || echo "[dev-sandbox] devcontainer up failed; continuing"
 
