@@ -50,9 +50,9 @@ if [[ ! -f "$DEVCONTAINER_JSON" ]]; then
     "ghcr.io/devcontainers/features/common-utils:2": {},
     "ghcr.io/devcontainers/features/git:1": {},
     "ghcr.io/devcontainers/features/python:1": {},
-    "ghcr.io/devcontainers/features/aws-cli:1": {}
-    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
-    "ghcr.io/devcontainers/features/node:1": {}
+    "ghcr.io/devcontainers/features/aws-cli:1": {},
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/devcontainers/features/node:1": {},
   },
   "postCreateCommand": "npm install -g @anthropic-ai/claude-code @openai/codex",
   "customizations": {
