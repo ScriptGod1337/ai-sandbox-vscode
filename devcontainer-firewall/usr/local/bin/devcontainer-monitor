@@ -1,0 +1,302 @@
+#!/usr/bin/env bash
+# devcontainer-monitor — watches Docker events and applies per-container iptables rules
+# Managed by: devcontainer-firewall.service
+
+set -euo pipefail
+
+# ─── Paths ───────────────────────────────────────────────────────────────────
+CONFIG_DIR="/etc/devcontainer-firewall/containers"
+LOG_TAG="devcontainer-firewall"
+
+# ─── Logging ─────────────────────────────────────────────────────────────────
+log()  { logger -t "$LOG_TAG" -- "$*"; echo "[$(date -Iseconds)] $*"; }
+warn() { logger -t "$LOG_TAG" -p user.warning -- "WARN: $*"; echo "[$(date -Iseconds)] WARN: $*"; }
+err()  { logger -t "$LOG_TAG" -p user.err    -- "ERR:  $*"; echo "[$(date -Iseconds)] ERR:  $*" >&2; }
+
+# ─── iptables comment label for a container ──────────────────────────────────
+# Format: devcontainer:<short_id>
+rule_label() { echo "devcontainer:${1:0:12}"; }
+
+# ─── Parse a single whitelist/blacklist entry ─────────────────────────────────
+# Entry formats:
+#   1.1.1.1/32            → all protocols, all ports
+#   1.1.1.1/32@443        → both TCP and UDP, port 443
+#   1.1.1.1/32@tcp:443    → TCP only, port 443
+#   1.1.1.1/32@udp:53     → UDP only, port 53
+#
+# Sets globals: ENTRY_CIDR  ENTRY_PROTO  ENTRY_PORT
+parse_entry() {
+    local entry="$1"
+    ENTRY_CIDR="${entry%%@*}"
+    ENTRY_PROTO=""
+    ENTRY_PORT=""
+
+    if [[ "$entry" == *"@"* ]]; then
+        local portspec="${entry#*@}"
+        if [[ "$portspec" == *":"* ]]; then
+            ENTRY_PROTO="${portspec%%:*}"
+            ENTRY_PORT="${portspec#*:}"
+        else
+            ENTRY_PORT="$portspec"
+        fi
+    fi
+}
+
+# ─── Load per-container config ───────────────────────────────────────────────
+# Returns 1 if no config found, sets globals WHITELIST_ENTRIES / BLACKLIST_ENTRIES
+load_config() {
+    local config_name="$1"
+    local config_file="$CONFIG_DIR/${config_name}.conf"
+
+    if [[ ! -f "$config_file" ]]; then
+        local default_file="$CONFIG_DIR/default.conf"
+        if [[ -f "$default_file" ]]; then
+            warn "Config not found: $config_file — falling back to default.conf"
+            config_file="$default_file"
+        else
+            err "Config not found: $config_file and no default.conf exists"
+            return 1
+        fi
+    fi
+
+    # Reset
+    WHITELIST_ENTRIES=()
+    BLACKLIST_ENTRIES=()
+
+    # Parse key=value, ignore comments and blank lines
+    while IFS='=' read -r key value; do
+        [[ "$key" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "$key" ]] && continue
+        key="${key// /}"
+        value="${value// /}"
+        case "$key" in
+            WHITELIST)
+                IFS=',' read -ra WHITELIST_ENTRIES <<< "$value" ;;
+            BLACKLIST)
+                IFS=',' read -ra BLACKLIST_ENTRIES <<< "$value" ;;
+        esac
+    done < "$config_file"
+
+    log "Loaded config '$config_name': whitelist=[${WHITELIST_ENTRIES[*]:-}] blacklist=[${BLACKLIST_ENTRIES[*]:-}]"
+}
+
+# ─── Build iptables extra args for a parsed entry ────────────────────────────
+# Echoes the extra arguments string; empty if no port spec.
+entry_ipt_args() {
+    local proto="$1" port="$2"
+    if [[ -n "$port" && -n "$proto" ]]; then
+        echo "-p $proto --dport $port"
+    elif [[ -n "$port" ]]; then
+        echo "--dport $port"   # caller must loop over tcp+udp
+    fi
+}
+
+# ─── Apply rules for a container ─────────────────────────────────────────────
+apply_rules() {
+    local container_id="$1"
+    local config_name="$2"
+    local label
+    label="$(rule_label "$container_id")"
+
+    # Get container source IP(s)
+    local src_ips
+    src_ips=$(docker inspect --format \
+        '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' \
+        "$container_id" | tr ' ' '\n' | grep -v '^$')
+
+    if [[ -z "$src_ips" ]]; then
+        warn "No IPs found for container $container_id — skipping rule application"
+        return
+    fi
+
+    load_config "$config_name" || return 1
+
+    log "Applying iptables rules for container $container_id (label=$label)"
+
+    for src_ip in $src_ips; do
+        # ── Whitelist: ACCEPT before any REJECT ──────────────────────────────
+        for entry in "${WHITELIST_ENTRIES[@]:-}"; do
+            [[ -z "$entry" ]] && continue
+            parse_entry "$entry"
+
+            if [[ -n "$ENTRY_PORT" && -z "$ENTRY_PROTO" ]]; then
+                # No protocol specified → insert rules for both TCP and UDP
+                for proto in tcp udp; do
+                    iptables -I DOCKER-USER \
+                        -s "$src_ip" -d "$ENTRY_CIDR" \
+                        -p "$proto" --dport "$ENTRY_PORT" \
+                        -m comment --comment "$label" \
+                        -j ACCEPT
+                done
+                log "  ACCEPT $src_ip → $ENTRY_CIDR @tcp+udp:$ENTRY_PORT  [$label]"
+            elif [[ -n "$ENTRY_PORT" && -n "$ENTRY_PROTO" ]]; then
+                iptables -I DOCKER-USER \
+                    -s "$src_ip" -d "$ENTRY_CIDR" \
+                    -p "$ENTRY_PROTO" --dport "$ENTRY_PORT" \
+                    -m comment --comment "$label" \
+                    -j ACCEPT
+                log "  ACCEPT $src_ip → $ENTRY_CIDR @$ENTRY_PROTO:$ENTRY_PORT  [$label]"
+            else
+                iptables -I DOCKER-USER \
+                    -s "$src_ip" -d "$ENTRY_CIDR" \
+                    -m comment --comment "$label" \
+                    -j ACCEPT
+                log "  ACCEPT $src_ip → $ENTRY_CIDR  [$label]"
+            fi
+        done
+
+        # ── Blacklist: REJECT ─────────────────────────────────────────────────
+        for entry in "${BLACKLIST_ENTRIES[@]:-}"; do
+            [[ -z "$entry" ]] && continue
+            parse_entry "$entry"
+
+            if [[ -n "$ENTRY_PORT" && -z "$ENTRY_PROTO" ]]; then
+                for proto in tcp udp; do
+                    iptables -A DOCKER-USER \
+                        -s "$src_ip" -d "$ENTRY_CIDR" \
+                        -p "$proto" --dport "$ENTRY_PORT" \
+                        -m comment --comment "$label" \
+                        -j REJECT --reject-with icmp-port-unreachable
+                done
+                log "  REJECT $src_ip → $ENTRY_CIDR @tcp+udp:$ENTRY_PORT  [$label]"
+            elif [[ -n "$ENTRY_PORT" && -n "$ENTRY_PROTO" ]]; then
+                iptables -A DOCKER-USER \
+                    -s "$src_ip" -d "$ENTRY_CIDR" \
+                    -p "$ENTRY_PROTO" --dport "$ENTRY_PORT" \
+                    -m comment --comment "$label" \
+                    -j REJECT --reject-with icmp-port-unreachable
+                log "  REJECT $src_ip → $ENTRY_CIDR @$ENTRY_PROTO:$ENTRY_PORT  [$label]"
+            else
+                iptables -A DOCKER-USER \
+                    -s "$src_ip" -d "$ENTRY_CIDR" \
+                    -m comment --comment "$label" \
+                    -j REJECT --reject-with icmp-port-unreachable
+                log "  REJECT $src_ip → $ENTRY_CIDR  [$label]"
+            fi
+        done
+    done
+}
+
+# ─── Remove all rules for a container ────────────────────────────────────────
+remove_rules() {
+    local container_id="$1"
+    local label
+    label="$(rule_label "$container_id")"
+
+    log "Removing iptables rules for container $container_id (label=$label)"
+
+    # iptables doesn't support deleting by comment directly — we must enumerate
+    # rules, find matching line numbers, and delete from highest to lowest
+    # to avoid renumbering issues.
+    local line_numbers
+    line_numbers=$(iptables -L DOCKER-USER --line-numbers -n 2>/dev/null \
+        | awk -v lbl="$label" '$0 ~ lbl {print $1}' \
+        | sort -rn)
+
+    if [[ -z "$line_numbers" ]]; then
+        log "  No rules found for label '$label'"
+        return
+    fi
+
+    for line in $line_numbers; do
+        iptables -D DOCKER-USER "$line"
+        log "  Deleted DOCKER-USER line $line"
+    done
+}
+
+# ─── Resolve config name from container ──────────────────────────────────────
+# Reads the Docker label 'dev-sandbox-config'; falls back to container name.
+get_config_name() {
+    local container_id="$1"
+    local config_name
+
+    # Try explicit label first
+    config_name=$(docker inspect \
+        --format '{{index .Config.Labels "dev-sandbox-config"}}' \
+        "$container_id" 2>/dev/null || true)
+
+    if [[ -z "$config_name" ]]; then
+        # Fall back to container name (strip leading /)
+        config_name=$(docker inspect \
+            --format '{{.Name}}' "$container_id" 2>/dev/null \
+            | sed 's|^/||')
+    fi
+
+    echo "$config_name"
+}
+
+# ─── Check if container has the sandbox label ────────────────────────────────
+is_sandbox_container() {
+    local container_id="$1"
+    local val
+    val=$(docker inspect \
+        --format '{{index .Config.Labels "dev-sandbox"}}' \
+        "$container_id" 2>/dev/null || true)
+    [[ "$val" == "true" ]]
+}
+
+# ─── Handle a Docker event ───────────────────────────────────────────────────
+handle_event() {
+    local action="$1"
+    local container_id="$2"
+
+    # Only act on sandbox-labelled containers
+    is_sandbox_container "$container_id" || return 0
+
+    local config_name
+    config_name="$(get_config_name "$container_id")"
+
+    case "$action" in
+        start)
+            log "Container started: $container_id (config=$config_name)"
+            apply_rules "$container_id" "$config_name" || \
+                warn "Failed to apply rules for $container_id"
+            ;;
+        die|stop|kill)
+            log "Container stopped ($action): $container_id"
+            remove_rules "$container_id"
+            ;;
+    esac
+}
+
+# ─── Cleanup on service stop ─────────────────────────────────────────────────
+cleanup() {
+    log "Service stopping — cleaning up all devcontainer rules"
+    # Remove all rules whose comment starts with "devcontainer:"
+    local line_numbers
+    line_numbers=$(iptables -L DOCKER-USER --line-numbers -n 2>/dev/null \
+        | awk '/devcontainer:/ {print $1}' \
+        | sort -rn)
+    for line in $line_numbers; do
+        iptables -D DOCKER-USER "$line" 2>/dev/null || true
+    done
+    log "Cleanup complete"
+    exit 0
+}
+
+trap cleanup SIGTERM SIGINT
+
+# ─── Main loop ────────────────────────────────────────────────────────────────
+log "devcontainer-monitor started. Watching Docker events..."
+
+# Apply rules for any already-running sandbox containers at startup
+log "Scanning for already-running sandbox containers..."
+while IFS= read -r container_id; do
+    [[ -z "$container_id" ]] && continue
+    log "Found running sandbox container: $container_id"
+    config_name="$(get_config_name "$container_id")"
+    apply_rules "$container_id" "$config_name" || \
+        warn "Failed to apply rules for $container_id"
+done < <(docker ps -q --filter "label=dev-sandbox=true")
+
+# Stream Docker events
+docker events \
+    --filter "type=container" \
+    --filter "event=start" \
+    --filter "event=die" \
+    --filter "event=stop" \
+    --filter "event=kill" \
+    --format "{{.Action}} {{.ID}}" \
+| while read -r action container_id; do
+    handle_event "$action" "$container_id" || true
+done

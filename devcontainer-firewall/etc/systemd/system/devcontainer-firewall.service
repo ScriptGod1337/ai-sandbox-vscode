@@ -1,0 +1,39 @@
+[Unit]
+Description=Devcontainer Firewall Monitor
+Documentation=https://github.com/ScriptGod1337/ai-sandbox-vscode
+After=docker.service
+Requires=docker.service
+# Restart if Docker restarts
+PartOf=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/devcontainer-monitor
+ExecStop=/bin/kill -SIGTERM $MAINPID
+
+# Give the cleanup trap time to flush iptables rules
+TimeoutStopSec=15
+
+# Always restart; Docker may not be ready on first start
+Restart=on-failure
+RestartSec=5s
+
+# Must run as root to modify iptables
+User=root
+Group=root
+
+# Log to journald (accessible via: journalctl -u devcontainer-firewall)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=devcontainer-firewall
+
+# Harden the service environment
+NoNewPrivileges=false   # iptables requires this
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/run /tmp
+PrivateTmp=true
+PrivateDevices=true
+
+[Install]
+WantedBy=multi-user.target
