@@ -28,7 +28,6 @@ DEVCONTAINER_DIR="$WORKSPACE/.devcontainer"
 DEVCONTAINER_JSON="$DEVCONTAINER_DIR/devcontainer.json"
 mkdir -p "$DEVCONTAINER_DIR"
 
-# If you want literally identical content, paste your existing devcontainer.json heredoc here.
 if [[ ! -f "$DEVCONTAINER_JSON" ]]; then
   cat > "$DEVCONTAINER_JSON" <<EOF
 {
@@ -52,7 +51,7 @@ if [[ ! -f "$DEVCONTAINER_JSON" ]]; then
     "ghcr.io/devcontainers/features/python:1": {},
     "ghcr.io/devcontainers/features/aws-cli:1": {},
     "ghcr.io/devcontainers/features/docker-in-docker:2": {},
-    "ghcr.io/devcontainers/features/node:1": {},
+    "ghcr.io/devcontainers/features/node:1": {}
   },
   "postCreateCommand": "npm install -g @anthropic-ai/claude-code @openai/codex",
   "customizations": {
@@ -76,7 +75,42 @@ else
   echo "[dev-sandbox] Using existing .devcontainer/devcontainer.json"
 fi
 
-# ---- 2) Create per-workspace firewall config (optional) ----
+# ---- 1b) Create agent instruction files ----
+if [[ ! -f "$WORKSPACE/AGENTS.md" ]]; then
+  cat > "$WORKSPACE/AGENTS.md" << 'AGENTEOF'
+# Agent Instructions
+
+## Environment
+
+This devcontainer runs as user `vscode` with **no root or sudo access**.
+The kernel enforces `no-new-privileges` — privilege escalation is blocked at the OS level.
+`sudo`, `su`, `newgrp`, and any setuid binary will fail immediately.
+
+## Constraints
+
+- **Do NOT write to**: `/opt`, `/usr`, `/etc`, `/var`, `/root`, or any system path
+- **Do NOT attempt**: `sudo`, `su`, `chmod +s`, or any privilege escalation
+- **Do NOT install**: system packages via `apt` or `dpkg` — they require root
+- **Writable paths**: `$HOME` (`/home/vscode`), `/tmp`, `/workspaces`
+- Install pip packages with `--user`, npm packages with `--prefix ~/.local`
+
+## Network
+
+Outbound traffic is firewall-controlled (iptables/DOCKER-USER on the host).
+RFC1918 ranges are blocked: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16.
+Public internet is reachable. DNS resolves via the configured resolver only.
+AGENTEOF
+  echo "[dev-sandbox] Created AGENTS.md"
+fi
+
+for agent_file in CLAUDE.md GEMINI.md; do
+  if [[ ! -f "$WORKSPACE/$agent_file" ]]; then
+    echo "@AGENTS.md" > "$WORKSPACE/$agent_file"
+    echo "[dev-sandbox] Created $agent_file"
+  fi
+done
+
+# ---- 2) Create per-workspace firewall config ----
 CONF_NAME="$(basename "$WORKSPACE")"
 CONF_FILE="$FIREWALL_CONF_DIR/${CONF_NAME}.conf"
 
@@ -117,14 +151,12 @@ if [ -n "$DEVCONTAINER_CLI" ]; then
 else
   echo "[dev-sandbox] devcontainer CLI not found; continuing"
 fi
-# --- ----
 
 # ---- 4) Open VS Code detached as the current user ----
 if [ -n "$CID" ]; then
   echo "[dev-sandbox] Opening VS Code: attaching to dev container $CID"
-  code --new-window  --folder-uri "vscode-remote://attached-container+$(printf "$CID" | xxd -p)/home/vscode/$(basename "$WORKSPACE")" >/dev/null 2>&1 || true
+  code --new-window --folder-uri "vscode-remote://attached-container+$(printf "$CID" | xxd -p)/home/vscode/$(basename "$WORKSPACE")" >/dev/null 2>&1 || true
 else
   echo "[dev-sandbox] Opening VS Code: $WORKSPACE"
   code --new-window "$WORKSPACE" >/dev/null 2>&1 || true
 fi
-# ----  ----
